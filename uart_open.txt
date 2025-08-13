@@ -1,0 +1,63 @@
+g++ -O2 -Wall uart_kline_open.cpp -o uart_kline_open
+./uart_kline_open                # dùng mặc định /dev/ttyTHS1 @10400
+./uart_kline_open /dev/ttyTHS2   # chỉ định thiết bị khác
+// uart_kline_open.cpp
+#include <cstdio>
+#include <cstdlib>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <linux/termbits.h>  // termios2 + BOTHER
+
+static int open_uart_kline(const char* dev) {
+    int fd = open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (fd < 0) { perror("open"); return -1; }
+
+    struct termios2 tio2{};
+    if (ioctl(fd, TCGETS2, &tio2) < 0) { perror("ioctl(TCGETS2)"); close(fd); return -1; }
+
+    // Raw 8N1, enable RX, no flow-control
+    tio2.c_cflag &= ~CBAUD;
+    tio2.c_cflag |= (BOTHER | CLOCAL | CREAD | CS8);
+    tio2.c_cflag &= ~CRTSCTS;
+    tio2.c_iflag = 0;
+    tio2.c_oflag = 0;
+    tio2.c_lflag = 0;
+
+    // Chiến lược đọc: block từng byte (VMIN=1), không timeout (VTIME=0)
+    // (Bạn có thể đổi VMIN=0, VTIME=2 → timeout 200ms)
+    tio2.c_cc[VMIN]  = 1;
+    tio2.c_cc[VTIME] = 0;
+
+    // Đặt baud "lẻ" 10400 bps cho K-Line
+    tio2.c_ispeed = 10400;
+    tio2.c_ospeed = 10400;
+
+    if (ioctl(fd, TCSETS2, &tio2) < 0) { perror("ioctl(TCSETS2)"); close(fd); return -1; }
+    if (tcflush(fd, TCIOFLUSH) < 0)    { perror("tcflush");         close(fd); return -1; }
+
+    return fd;
+}
+
+int main(int argc, char** argv) {
+    const char* dev = (argc > 1) ? argv[1] : "/dev/ttyTHS1";
+
+    int fd = open_uart_kline(dev);
+    if (fd < 0) {
+        std::fprintf(stderr, "Không mở được %s ở 10,400 bps (K-Line).\n", dev);
+        return 1;
+    }
+
+    std::printf("UART sẵn sàng: %s @ 10400 bps, 8N1, raw, no flow-control.\n", dev);
+
+    // TODO: Thực hiện fast-init bằng GPIO (25 ms LOW/25 ms HIGH) trước khi gửi KWP2000.
+    // TODO: Gửi/nhận frame K-Line qua write(fd, buf, len) / read(fd, buf, len).
+    // Ví dụ tối giản:
+    // unsigned char b = 0x55; write(fd, &b, 1); tcdrain(fd);
+
+    close(fd);
+    return 0;
+}
